@@ -1,51 +1,46 @@
-const { createServer } = require('http');
-const {
-  stat,
-  createReadStream,
-  createWriteStream 
-} = require('fs');
-const { promisify } = require('util');
-const fileName = './dredd.mp4';
-const fileInfo = promisify(stat);
+var lorawan = require('lorawan-js');
 
-const respondWithVideo = async (req, res) => {
-  const { size } = await fileInfo(fileName);
-  const range = req.headers.range;
-  if (range) {
-    let [start, end] = range.replace(/bytes=/, '').split('-');
-    start = parseInt(start, 10);
-    end = end ? parseInt(end, 10) : size - 1;
-    res.writeHead(206, {
-       'Content-Range': `bytes ${start}-${end}/${size}`,
-       'Accept-Ranges': 'bytes',
-       'Content-Length': (end-start) + 1,
-       'Content-Type': 'video/mp4'
-    })
-    createReadStream(fileName, { start, end }).pipe(res);
-  } else {
-    res.writeHead(200, {
-      'Content-Length': size,
-      'Content-Type': 'video/mp4'
-    });
-    createReadStream(fileName).pipe(res);
-  }
-}
+var prop = {"port":3000};
+var lwServer = new lorawan.Server(prop);
 
-createServer((req, res) => {
-  if (req.method === 'POST') {
-    req.pipe(res);
-    req.pipe(process.stdout);
-    req.pipe(createWriteStream('./upload.file'));
-  } else if (req.url === '/video') {
-    respondWithVideo(req, res);
-  } else {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(`
-      <form enctype="multipart/form-data" method="POST" action="/">
-        <input type="file" name="upload-file" />
-        <button>Upload File</button>
-      </form>
-    `);
+lwServer.start();
+
+lwServer.on("ready", (info, server) => {
+  console.log("Ready: ", info);
+});
+
+
+lwServer.on('pushdata_rxpk', (message, clientInfo) => {
+
+  var pdata = message.data.rxpk[0].data;
+  var buff = new Buffer(pdata, 'Base64');
+
+  var MYpacket = lorawan.Packet(buff);
+
+  console.log("[Upstream] IN pushdata RXPK - ", MYpacket.MType.Description ," from: ", MYpacket.Buffers.MACPayload.FHDR.DevAddr);
+
+  if (MYpacket.Buffers.MACPayload.FHDR.DevAddr.toString('hex')=="be7a0000") {
+
+     var NwkSKey = new Buffer('000102030405060708090A0B0C0D0E0F', 'hex');
+     var AppSKey = new Buffer('000102030405060708090A0B0C0D0E0F', 'hex');
+
+     var MYdec = MYpacket.decryptWithKeys(AppSKey, NwkSKey);
+
+     console.log("MY Time: " + MYdec.readUInt32LE(0).toString() + " Battery: " + MYdec.readUInt8(4).toString() + " Temperature: " + MYdec.readUInt8(5).toString() + " Lat: " + MYdec.readUInt32LE(6).toString() + " - Long: " + MYdec.readUInt32LE(10).toString());
+
+  } else if(MYpacket.Buffers.MACPayload.FHDR.DevAddr.toString('hex')=="03ff0001") {
+
+    var NwkSKey = new Buffer('2B7E151628AED2A6ABF7158809CF4F3C', 'hex');
+    var AppSKey = new Buffer('2B7E151628AED2A6ABF7158809CF4F3C', 'hex');
+
+
+    var MYdec = MYpacket.decryptWithKeys(AppSKey, NwkSKey);
+    console.log("MYdec: ", MYdec.toString('utf8'), " - ", MYdec.length);
+
+  }  else {
+
+    console.log("New device: ", MYpacket.Buffers.MACPayload.FHDR.DevAddr.toString('hex'));
+
   }
 
-}).listen(3000, () => console.log('server running - 3000'));
+});
